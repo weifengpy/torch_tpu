@@ -1737,8 +1737,11 @@ torch_tpu_py_test(
     ),
     deps = [
         ":error_testing",
+        ":op_testing",
         "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
@@ -1747,7 +1750,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -1809,8 +1812,11 @@ torch_tpu_py_test(
     visibility = ["//:__subpackages__"],
     deps = [
         ":error_testing",
+        ":op_testing",
         "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
@@ -1819,7 +1825,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",

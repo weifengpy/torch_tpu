@@ -19,11 +19,16 @@ from collections.abc import Mapping, Sequence
 import contextlib
 import os
 import re
+import sys
 from typing import Any, TypeAlias
 from unittest import mock
+from absl import flags
 from absl.testing import absltest
+from absl.testing import flagsaver
 from absl.testing import parameterized
 import torch
+from torch._higher_order_ops import associative_scan
+from torch._higher_order_ops import scan
 import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 import torch.multiprocessing as mp
@@ -52,6 +57,25 @@ from tests.distributed import distributed_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 _EagerMode: TypeAlias = execution_mode._EagerMode
+
+_OP_TESTING_FLAG = None
+
+
+def _import_op_testing():
+  global _OP_TESTING_FLAG
+  if "torch_tpu.tests.op_testing" in sys.modules:
+    return sys.modules["torch_tpu.tests.op_testing"]
+  flag_name = "test_mode"
+  flags_dict = flags.FLAGS._flags()
+  saved_flag = flags_dict.pop(flag_name, None)
+  try:
+    from tests import op_testing
+
+    _OP_TESTING_FLAG = flags_dict.pop(flag_name, None)
+    return op_testing
+  finally:
+    if saved_flag is not None:
+      flags_dict[flag_name] = saved_flag
 
 
 def setUpModule():
@@ -403,6 +427,20 @@ Because multiple logical tensor indices point to the same buffer elements, write
 Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.index_copy(self_tensor, 0, index, source, out=t)
+
+  @et.why_tpu_only(
+      "TorchTPU prohibits inplace writes to overlapping unfold views."
+  )
+  def test_unfold_mutate_view_fails(self):
+    base = torch.zeros(1024, 128, device=et.device())
+    view = base.unfold(dimension=1, size=127, step=1)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""add_(): inplace writes to overlapping views are undefined behavior and are not supported.
+Because multiple logical tensor indices point to the same buffer elements, writes from multiple indices may overwrite each other.
+Please use clone() or contiguous() to copy the tensor before writing""",
+    ):
+      view.add_(1.0)
 
   @et.why_tpu_only("Testing TPU OOM behavior.")
   def test_mm_with_oom_result(self):
@@ -1136,6 +1174,40 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
       # cpu() is needed because the error is triggered inside the op builder.
       outputs[0].cpu()
+
+  @et.why_tpu_only(
+      "TorchTPU im2col kernel provides custom argument validation."
+  )
+  def test_im2col_invalid_input_dimensions(self):
+    x_2d = torch.randn(2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected input to have 3 or 4 dimensions, got 2""",
+    ):
+      torch.ops.aten.im2col(
+          x_2d,
+          kernel_size=(2, 2),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
+      )
+
+  @et.why_tpu_only(
+      "TorchTPU im2col kernel provides custom argument validation."
+  )
+  def test_im2col_non_positive_output_shape(self):
+    x_small = torch.randn(1, 1, 2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""im2col(): expected output shape to be positive, got 0x0""",
+    ):
+      torch.ops.aten.im2col(
+          x_small,
+          kernel_size=(3, 3),
+          dilation=(1, 1),
+          padding=(0, 0),
+          stride=(1, 1),
+      )
 
   @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
   def test_convolution_dynamic_kernel(self):
@@ -2740,6 +2812,245 @@ module {
           False,
       )
 
+  @et.why_tpu_only("Testing scan op error handling on TPU for PyTorch < 2.14.")
+  @et.skip_if(
+      lambda: utils.parse_version(torch.__version__) >= (2, 14, 0),
+      "PyTorch >= 2.14 supports seq_len == 0 in scan",
+  )
+  def test_scan_zero_length_xs(self):
+    def fn(carry, x):
+      return carry + x, carry + x
+
+    x = torch.empty(0, 1, device=et.device())
+    init = torch.tensor([5.0], device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""All xs leaves must at least have 'dim' number of dimensions and scan dimension > 0""",
+    ):
+      compiled = torch.compile(scan, backend="tpu", dynamic=False)
+      compiled(fn, init, x, dim=0)
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates matching tree structures of inputs"
+      " and outputs."
+  )
+  def test_associative_scan_mismatched_tree_structure(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""the tree structure of the xs and the outs of the combine_fn are expected to be identical, but got xs: TreeSpec(None, []) vs output: TreeSpec(tuple, [None, None])""",
+    ):
+      associative_scan(lambda a, b: (a + b, a - b), x_tpu, dim=0)
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that combine_fn is pointwise when"
+      " combine_mode='pointwise'."
+  )
+  def test_associative_scan_non_pointwise_combine_mode(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""for combine_mode='pointwise', the combine_fn needs to be pointwise""",
+    ):
+      associative_scan(
+          lambda a, b: a @ b,
+          torch.randn(4, 4, 4, device=et.device()),
+          dim=0,
+          combine_mode="pointwise",
+      )
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that combine_fn is callable."
+  )
+  def test_associative_scan_non_callable_combine_fn(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Combine_fn must be a callable, but got not_callable""",
+    ):
+      associative_scan("not_callable", x_tpu, dim=0)
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that xs has at least 1 leaf."
+  )
+  def test_associative_scan_empty_xs(self):
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""list index out of range""",
+    ):
+      associative_scan(lambda a, b: a + b, (), dim=0)
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that xs leaves are tensors."
+  )
+  def test_associative_scan_non_tensor_leaves(self):
+    with et.assert_raises_message(
+        AttributeError,
+        tpu="""'int' object has no attribute 'ndim'""",
+    ):
+      associative_scan(lambda a, b: a + b, [1, 2], dim=0)
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that dim is an integer."
+  )
+  def test_associative_scan_dim_non_int(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        TypeError,
+        tpu="""'>=' not supported between instances of 'str' and 'int'""",
+    ):
+      associative_scan(lambda a, b: a + b, x_tpu, dim="0")
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that reverse is a boolean."
+  )
+  def test_associative_scan_reverse_non_bool(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Reverse must be a bool, but got <class 'str'>""",
+    ):
+      associative_scan(lambda a, b: a + b, x_tpu, dim=0, reverse="yes")
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that combine_mode is 'pointwise' or"
+      " 'generic'."
+  )
+  def test_associative_scan_invalid_combine_mode(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        ValueError,
+        tpu="""Combine_mode must either 'pointwise' or 'generic', but got invalid""",
+    ):
+      associative_scan(lambda a, b: a + b, x_tpu, dim=0, combine_mode="invalid")
+
+  @et.why_tpu_only("TorchTPU associative_scan validates scan dimension range.")
+  def test_associative_scan_out_of_range_dim(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""Dimension out of range (expected to be in range of [-2, 1], but got 10)""",
+    ):
+      associative_scan(lambda a, b: a + b, x_tpu, dim=10)
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that combine_fn output shape"
+      " matches input slice shape."
+  )
+  def test_associative_scan_combiner_changes_shape(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""the metadata of the combine_fn output is expected to match the input slice metadata, got FakeTensor(..., device='tpu:0', size=(8,)) vs FakeTensor(..., device='tpu:0', size=(16,))""",
+    ):
+      associative_scan(lambda a, b: torch.cat([a, b], dim=0), x_tpu, dim=0)
+
+  @et.why_tpu_only(
+      "TorchTPU associative_scan validates that combine_fn output dtype"
+      " matches input slice dtype."
+  )
+  def test_associative_scan_combiner_changes_dtype(self):
+    x_tpu = torch.randn(4, 8, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""the metadata of the combine_fn output is expected to match the input slice metadata, got FakeTensor(..., device='tpu:0', size=(8,)) vs FakeTensor(..., device='tpu:0', size=(8,), dtype=torch.int32)""",
+    ):
+      associative_scan(lambda a, b: (a + b).to(torch.int32), x_tpu, dim=0)
+
+  @parameterized.named_parameters(
+      ("negative_rtol", -1e-5, None, "rtol must be > 0"),
+      ("zero_rtol", 0, None, "rtol must be > 0"),
+      ("negative_atol", None, -1e-5, "atol must be > 0"),
+      ("zero_atol", None, 0, "atol must be > 0"),
+  )
+  @et.why_tpu_only(
+      "Op testing framework validates that rtol and atol are positive."
+  )
+  def test_assert_close_invalid_tolerances(
+      self, rtol, atol, expected_msg_regex
+  ):
+    op_testing = _import_op_testing()
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile(f".*{expected_msg_regex}.*", re.DOTALL),
+    ):
+      op_testing._validate_tolerances(rtol=rtol, atol=atol)
+
+  @et.why_tpu_only(
+      "utils.assert_close raises AssertionError on tensor shape mismatch."
+  )
+  def test_assert_close_mismatched_shapes(self):
+    t1 = torch.tensor([1.0], device=et.device())
+    t2 = torch.tensor([1.0, 2.0], device=et.device())
+    with et.assert_raises_message(
+        AssertionError,
+        tpu=re.compile(r".*Tensor shape mismatch:.*", re.DOTALL),
+    ):
+      utils.assert_close(actual=t1, expected=t2)
+
+  @et.why_tpu_only("OpTestingFramework missing GPU golden error handling.")
+  def test_torch_tpu_vs_gpu_missing_golden_fails(self):
+    from torch.testing._internal.common_methods_invocations import op_db
+
+    op_testing = _import_op_testing()
+    flags_dict = flags.FLAGS._flags()
+    saved_flag = flags_dict.get("test_mode")
+    flags_dict["test_mode"] = _OP_TESTING_FLAG
+    try:
+      op = next(op for op in op_db if op.name == "add")
+      with (
+          flagsaver.flagsaver(test_mode=op_testing.TestMode.TORCH_TPU_VS_GPU),
+          mock.patch.object(
+              op_testing, "_GOLDEN_GPU_DATA", op_testing.GoldenGpuData()
+          ),
+      ):
+        helper = op_testing.OpInfoTestBase("runTest")
+        helper._testMethodName = self._testMethodName
+        with et.assert_raises_message(
+            AssertionError,
+            tpu=re.compile(
+                r".*No GPU golden samples found for add.*Please re-generate"
+                r" the GPU"
+                r" golden files.*",
+                re.DOTALL,
+            ),
+        ):
+          helper._get_golden_input_output_pairs(
+              op=op,
+              dtype=torch.float32,
+              variant=op_testing.OpVariant.BASE,
+              max_samples=1,
+          )
+
+        class FakeSample:
+
+          def __init__(self, name, input_value, args, kwargs):
+            self.name = name
+            self.input = input_value
+            self.args = args
+            self.kwargs = kwargs
+
+        fake_input = op_testing.OpInput(FakeSample("s", torch.zeros(1), (), {}))
+        fake_output = op_testing.OpOutput(torch.zeros(1))
+        fake_sample = (fake_input, fake_output)
+        op_testing._GOLDEN_GPU_DATA.add(
+            self._testMethodName,
+            op_testing.OpVariant.BASE,
+            torch.float32,
+            fake_input,
+            fake_output,
+        )
+        res = helper._get_golden_input_output_pairs(
+            op=op,
+            dtype=torch.float32,
+            variant=op_testing.OpVariant.BASE,
+            max_samples=1,
+        )
+        self.assertEqual(res, [fake_sample])
+    finally:
+      if saved_flag is not None:
+        flags_dict["test_mode"] = saved_flag
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_rng_validate_device_index_error(self):
     self.assertEqual(torch.accelerator.current_device_index(), 0)
@@ -2749,6 +3060,52 @@ module {
         tpu="""expected local device index 0, got 1: accessing RNG state of a non-current TPU device is not supported""",
     ):
       torch.tpu.set_rng_state(torch.zeros(16, dtype=torch.uint8), 1)
+
+  @et.why_tpu_only("TPU set_rng_state expects state to be a CPU ByteTensor.")
+  def test_set_rng_state_wrong_dtype(self):
+    device = et.device()
+    state = torch.zeros(16, dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expect rng state to be a torch.ByteTensor""",
+    ):
+      torch.tpu.set_rng_state(state, device)
+
+  @et.why_tpu_only("TPU set_rng_state expects state to be a CPU ByteTensor.")
+  def test_set_rng_state_non_cpu_tensor(self):
+    device = et.device()
+    state = torch.zeros(16, dtype=torch.uint8, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expect rng state to be a torch.ByteTensor""",
+    ):
+      torch.tpu.set_rng_state(state, device)
+
+  @et.why_tpu_only(
+      "TPU Generator.set_state expects state to be a CPU ByteTensor."
+  )
+  def test_generator_set_state_wrong_dtype(self):
+    device = et.device()
+    g = torch.Generator(device=device)
+    state = torch.zeros(16, dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expect rng state to be a torch.ByteTensor""",
+    ):
+      g.set_state(state)
+
+  @et.why_tpu_only(
+      "TPU Generator.set_state expects state to be a CPU ByteTensor."
+  )
+  def test_generator_set_state_non_cpu_tensor(self):
+    device = et.device()
+    g = torch.Generator(device=device)
+    state = g.get_state().to(device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expect rng state to be a torch.ByteTensor""",
+    ):
+      g.set_state(state)
 
   # TODO(marcosyukio): check if this test passes on CUDA with CC >= 8.9.
   @et.why_tpu_only(
@@ -2878,6 +3235,54 @@ module {
           amsgrad=False,
           maximize=False,
       )
+
+  @et.why_tpu_only(
+      "Buffer donation invalidation is a TPU-specific optimization."
+  )
+  def test_fused_adamw_donates_first_argument_error(self):
+    # TODO: b/576318333 - Re-enable once torch.compile of _fused_adamw_ passes
+    # functionalization.
+    self.skipTest("b/576318333: functionalization fails for _fused_adamw_.")
+
+    @torch.compile(
+        fullgraph=True,
+        backend="tpu",
+        options={"serializable": False},
+    )
+    def step_fn(params, grads, exp_avgs, exp_avg_sqs, state_steps, lr):
+      torch.ops.aten._fused_adamw_.default(
+          params,
+          grads,
+          exp_avgs,
+          exp_avg_sqs,
+          [],
+          state_steps,
+          lr=lr,
+          beta1=0.9,
+          beta2=0.999,
+          weight_decay=0.01,
+          eps=1e-8,
+          amsgrad=False,
+          maximize=False,
+      )
+
+    p = torch.tensor([1.0, 2.0], dtype=torch.float32, device="tpu")
+    g = torch.tensor([0.1, 0.2], dtype=torch.float32, device="tpu")
+    ea = torch.tensor([0.01, 0.02], dtype=torch.float32, device="tpu")
+    eas = torch.tensor([0.001, 0.002], dtype=torch.float32, device="tpu")
+    step = torch.tensor([1], dtype=torch.int64, device="tpu")
+
+    old_p_view = p.view_as(p)
+
+    step_fn([p], [g], [ea], [eas], [step], 0.001)
+
+    self.assertIsNotNone(p.cpu())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""to_copy(): cannot start a device to host copy from a donated or deleted buffer""",
+    ):
+      old_p_view.cpu()
 
   @et.why_tpu_only("GPU missing check: out-of-bounds read corrupts computation")
   def test_fused_adam_mismatched_state_steps_size(self):
