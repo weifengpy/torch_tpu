@@ -346,7 +346,7 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
     self.assertEqual(hardware.get_tpu_topology(), expected_topology)
     self.assertEqual(hardware.get_tpu_device_count(), expected_device_count)
     self.assertEqual(hardware.get_tpu_device_name(), expected_device_name)
-    self.assertEqual(hardware.get_tpu_spec(), expected_spec)
+    self.assertIs(hardware.get_tpu_spec(), expected_spec)
     self.assertEqual(
         hardware.get_hbm_bytes_per_device(),
         None if expected_spec is None else expected_spec.hbm_bytes_per_device,
@@ -515,6 +515,16 @@ class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
         tpu_spec.bf16_flops_per_device, expected_bf16_flops_per_device
     )
     self.assertEqual(tpu_spec.sparse_core_spec, expected_sparse_core_spec)
+    reconstructed = hardware.TpuSpec(
+        name=tpu_spec.name,
+        devices_per_chip=tpu_spec.devices_per_chip,
+        hbm_bytes_per_chip=tpu_spec.hbm_bytes_per_chip,
+        bf16_flops_per_chip=tpu_spec.bf16_flops_per_chip,
+        topologies=tpu_spec.topologies,
+        sparse_core_spec=tpu_spec.sparse_core_spec,
+    )
+    self.assertEqual(reconstructed, tpu_spec)
+    self.assertEqual(reconstructed.topologies, tpu_spec.topologies)
 
   def test_each_tpu_spec_has_pci_device_id_and_topologies(self):
     tpu_specs = [
