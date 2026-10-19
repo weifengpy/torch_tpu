@@ -1739,14 +1739,16 @@ torch_tpu_py_test(
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -1758,6 +1760,8 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/utils:hardware",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests/distributed:distributed_utils",
+        "@pypi//jax",
+        "@pypi//packaging",
     ],
 )
 
@@ -1811,14 +1815,16 @@ torch_tpu_py_test(
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:flex_attention",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//src/torch_tpu/_internal/distributed",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/dynamism",
@@ -1830,6 +1836,8 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/utils:hardware",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests/distributed:distributed_utils",
+        "@pypi//jax",
+        "@pypi//packaging",
     ],
 )
 
