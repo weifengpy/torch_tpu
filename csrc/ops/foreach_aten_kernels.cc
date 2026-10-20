@@ -3252,9 +3252,50 @@ absl::StatusOr<at::Tensor> AtenPow(const at::Scalar& self,
   return out;
 }
 
+namespace {
+
+absl::Status ValidateForeachNonEmpty(at::TensorList tensors) {
+  TT_RET_CHECK(!tensors.empty(), error::kInvalidArgument)
+      << "expected tensor list to have at least one tensor, got an empty list";
+  return absl::OkStatus();
+}
+
+absl::Status ValidateForeachTensorLists(at::TensorList self,
+                                        at::TensorList other) {
+  TT_RETURN_IF_ERROR(ValidateForeachNonEmpty(self));
+  TT_RETURN_IF_ERROR(ValidateForeachNonEmpty(other));
+  TT_RET_CHECK(self.size() == other.size(), error::kInvalidArgument)
+      << "expected tensor lists to have the same number of tensors, got "
+      << self.size() << " and " << other.size();
+  return absl::OkStatus();
+}
+
+absl::Status ValidateForeachScalarList(at::TensorList self,
+                                       at::ArrayRef<at::Scalar> scalars) {
+  TT_RETURN_IF_ERROR(ValidateForeachNonEmpty(self));
+  TT_RET_CHECK(self.size() == scalars.size(), error::kInvalidArgument)
+      << "expected tensor list to have the same number of elements as scalar "
+         "list, got "
+      << self.size() << " and " << scalars.size();
+  return absl::OkStatus();
+}
+
+absl::Status ValidateForeachPowScalarExponent(const at::Tensor& self,
+                                              const at::Scalar& exponent) {
+  TT_RET_CHECK(
+      !(c10::isIntegralType(self.scalar_type(), /*includeBool=*/true) &&
+        exponent.isIntegral(/*includeBool=*/true) && exponent.toLong() < 0),
+      error::kInvalidArgument)
+      << "integers to negative integer powers are not allowed";
+  return absl::OkStatus();
+}
+
+}  // namespace
+
 std::vector<at::Tensor> AtenForeachPowList(at::TensorList self,
                                            at::TensorList exponent) {
   TT_KERNEL(OpName::kForeachPowList, _, (self, exponent), {
+    TT_THROW_IF_ERROR(ValidateForeachTensorLists(self, exponent));
     std::vector<at::Tensor> result;
     result.reserve(self.size());
     for (size_t i = 0; i < self.size(); ++i) {
@@ -3267,6 +3308,7 @@ std::vector<at::Tensor> AtenForeachPowList(at::TensorList self,
 
 void AtenForeachPow_List(at::TensorList self, at::TensorList exponent) {
   TT_KERNEL(OpName::kForeachPow_List, _, (self, exponent), {
+    TT_THROW_IF_ERROR(ValidateForeachTensorLists(self, exponent));
     for (size_t i = 0; i < self.size(); ++i) {
       AtenPowTensorTensorOut(self[i], exponent[i],
                              const_cast<at::Tensor&>(self[i]));
@@ -3278,9 +3320,11 @@ std::vector<at::Tensor> AtenForeachPowScalar(at::TensorList self,
                                              const at::Scalar& exponent) {
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kForeachPowScalar, _, (self, promoted_exponent), {
+    TT_THROW_IF_ERROR(ValidateForeachNonEmpty(self));
     std::vector<at::Tensor> result;
     result.reserve(self.size());
     for (const auto& tensor : self) {
+      TT_THROW_IF_ERROR(ValidateForeachPowScalarExponent(tensor, exponent));
       const at::ScalarType out_dtype =
           at::result_type(tensor, promoted_exponent.scalar());
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
@@ -3301,8 +3345,10 @@ std::vector<at::Tensor> AtenForeachPowScalar(at::TensorList self,
 void AtenForeachPow_Scalar(at::TensorList self, const at::Scalar& exponent) {
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kForeachPow_Scalar, _, (self, promoted_exponent), {
+    TT_THROW_IF_ERROR(ValidateForeachNonEmpty(self));
     TT_THROW_IF_ERROR(ValidateInplaceScalarType(self, exponent));
     for (const auto& tensor : self) {
+      TT_THROW_IF_ERROR(ValidateForeachPowScalarExponent(tensor, exponent));
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
                          promoted_exponent.GetTensor(tensor.scalar_type()));
       TT_THROW_IF_ERROR(BinaryOpOut(
@@ -3317,9 +3363,11 @@ std::vector<at::Tensor> AtenForeachPowScalarList(
     at::TensorList self, at::ArrayRef<at::Scalar> exponent) {
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kForeachPowScalarList, _, (self, promoted_exponent), {
+    TT_THROW_IF_ERROR(ValidateForeachScalarList(self, exponent));
     std::vector<at::Tensor> result;
     result.reserve(self.size());
     for (size_t i = 0; i < self.size(); ++i) {
+      TT_THROW_IF_ERROR(ValidateForeachPowScalarExponent(self[i], exponent[i]));
       const at::ScalarType out_dtype =
           at::result_type(self[i], promoted_exponent[i].scalar());
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
@@ -3341,8 +3389,10 @@ void AtenForeachPow_ScalarList(at::TensorList self,
                                at::ArrayRef<at::Scalar> exponent) {
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kForeachPow_ScalarList, _, (self, promoted_exponent), {
+    TT_THROW_IF_ERROR(ValidateForeachScalarList(self, exponent));
     TT_THROW_IF_ERROR(ValidateInplaceScalarType(self, exponent));
     for (size_t i = 0; i < self.size(); ++i) {
+      TT_THROW_IF_ERROR(ValidateForeachPowScalarExponent(self[i], exponent[i]));
       TT_ASSIGN_OR_THROW(at::Tensor scalar_tensor,
                          promoted_exponent[i].GetTensor(self[i].scalar_type()));
       TT_THROW_IF_ERROR(
@@ -3358,6 +3408,7 @@ std::vector<at::Tensor> AtenForeachPowScalarAndTensor(const at::Scalar& self,
                                                       at::TensorList exponent) {
   auto promoted_self = PromoteScalar(self);
   TT_KERNEL(OpName::kForeachPowScalarAndTensor, _, (promoted_self, exponent), {
+    TT_THROW_IF_ERROR(ValidateForeachNonEmpty(exponent));
     std::vector<at::Tensor> result;
     result.reserve(exponent.size());
     for (const auto& tensor : exponent) {
