@@ -62,6 +62,16 @@ absl::Status ValidateMmOutInputs(const at::Tensor& lhs, const at::Tensor& rhs,
            "got out_dtype "
         << ToString(out_scalar_type) << " vs out tensor dtype "
         << ToString(out.scalar_type());
+    if (!IsLowPrecisionFloat(lhs)) {
+      TT_RET_CHECK(out_scalar_type == lhs.scalar_type() ||
+                       (out_scalar_type == at::kFloat &&
+                        (lhs.scalar_type() == at::kHalf ||
+                         lhs.scalar_type() == at::kBFloat16)),
+                   error::kInvalidArgument)
+          << "expected out_dtype to be the same as input dtype or float32 for "
+             "float16/bfloat16 inputs, got "
+          << ToString(out_scalar_type);
+    }
   } else {
     // For mm, the inputs and output should have the same dtype
     TT_RET_CHECK(out.scalar_type() == lhs.scalar_type(),
@@ -135,6 +145,8 @@ absl::Status Mm(const at::Tensor& lhs, const at::Tensor& rhs, at::Tensor& out,
 at::Tensor AtenMmDtype(const at::Tensor& lhs, const at::Tensor& rhs,
                        at::ScalarType out_dtype) {
   TT_KERNEL(OpName::kMmDtype, param_keys, (lhs, rhs, out_dtype), {
+    TT_THROW_IF_ERROR(ValidateIsMatrix(lhs, /* arg_name= */ "first"));
+    TT_THROW_IF_ERROR(ValidateIsMatrix(rhs, /* arg_name= */ "second"));
     int64_t output_dims[2] = {lhs.size(0), rhs.size(1)};
     TT_ASSIGN_OR_THROW(at::Tensor out,
                        MakeEmptyTensor(output_dims, out_dtype, lhs.device()));
