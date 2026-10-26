@@ -69,7 +69,7 @@ void TryExpandRankInEnvVar(std::string_view rank) {
   if (env_val == nullptr || !absl::StrContains(env_val, "${RANK}")) return;
   std::string new_val(env_val);
   absl::StrReplaceAll({{"${RANK}", rank}}, &new_val);
-  SetEnv<env_var_name>(new_val);
+  SafeSetEnv<env_var_name>(new_val);
 }
 
 // Creates a PluginTracer instance to collect TPU profile metrics.
@@ -177,7 +177,7 @@ void MaybeSkipMegascaleForLaterClients(
   if (!device_attributes.contains("slice_index")) {
     return;
   }
-  SetEnv<kSkipMegascalePjrtClientEnvVar>("true");
+  SafeSetEnv<kSkipMegascalePjrtClientEnvVar>("true");
   ABSL_LOG(INFO) << "TorchTPU owns the MegaScale PJRT client; set "
                  << kSkipMegascalePjrtClientEnvVar
                  << " so that later PJRT clients in this process skip "

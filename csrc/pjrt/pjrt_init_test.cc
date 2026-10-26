@@ -104,9 +104,9 @@ TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
   });
 
   // Use a valid XLA flag to avoid parsing errors in XLA initialization.
-  SetEnv<kXlaFlagsEnvVar>("--xla_disable_hlo_passes=some_pass_${RANK}");
-  SetEnv<kLibtpuInitArgsEnvVar>("some_args_${RANK}");
-  SetEnv<kRankEnvVar>("1234");
+  SafeSetEnv<kXlaFlagsEnvVar>("--xla_disable_hlo_passes=some_pass_${RANK}");
+  SafeSetEnv<kLibtpuInitArgsEnvVar>("some_args_${RANK}");
+  SafeSetEnv<kRankEnvVar>("1234");
 
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
       {.device_type = "tpu"});

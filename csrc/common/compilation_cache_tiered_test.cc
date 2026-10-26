@@ -45,12 +45,12 @@ class TieredCompilationCacheTest : public testing::Test {
     // Use a unique name so that entries from previous runs can't be hit.
     const std::string name = absl::StrCat("compilation_cache_tiered_test_",
                                           absl::ToUnixNanos(absl::Now()));
-    SetEnv<kTorchTpuTier2CompilationCacheEnvVar>(name);
-    SetEnv<kTorchTpuTier3CompilationCacheRootEnvVar>(
+    SafeSetEnv<kTorchTpuTier2CompilationCacheEnvVar>(name);
+    SafeSetEnv<kTorchTpuTier3CompilationCacheRootEnvVar>(
         absl::StrCat(testing::TempDir(), "/", name));
     // The tier-3 read path races a backup compilation against the read by
     // default, which would make the compilation counts below nondeterministic.
-    SetEnv<kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar>(
+    SafeSetEnv<kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar>(
         "false");
   }
 
