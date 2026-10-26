@@ -28,7 +28,6 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
-#include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
@@ -326,7 +325,7 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
       /*context=*/"failed to compile the nonzero indices kernel");
 }
 
-CompilationCacheKey NonZeroCacheKey() {
+ShapelessKey NonZeroCacheKey() {
   // Only ranks and dtypes reach the shapeless key, so these extents are
   // placeholders. The rank must be 2: the kernel only accepts F32[M,N].
   const Dimensions input_dims = {-1, -1};
@@ -344,8 +343,7 @@ CompilationCacheKey NonZeroCacheKey() {
                 out = op.AddOutput(out_dims, mlir::ElementType::I64);
               });
   graph.AddGraphOutput(out);
-  return CompilationCacheKey(graph.GetKey(), CompileOptionsKey({}),
-                             "nonzero_2d");
+  return graph.GetKey().shapeless_key();
 }
 
 }  // namespace torch_tpu

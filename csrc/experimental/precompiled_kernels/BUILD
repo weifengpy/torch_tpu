@@ -69,7 +69,6 @@ torch_tpu_cc_library(
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
         "//csrc/common:compilation_spec",
-        "//csrc/common:compile_options_key",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:shape",
@@ -87,6 +86,25 @@ torch_tpu_cc_library(
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
     ],
+)
+
+# Registers every precompiled unbounded dynamic kernel with
+# //csrc/common:unbounded_dynamic_kernel_registry when
+# loaded. Nothing references its symbols, hence `alwayslink`. Depends on
+# Mosaic through the kernels, so link it only into TPU-only targets.
+torch_tpu_cc_library(
+    name = "kernel_registration",
+    srcs = ["kernel_registration.cc"],
+    deps = [
+        ":nonzero_indices",
+        "//csrc/common:cache_key",
+        "//csrc/common:compilation",
+        "//csrc/common:compile_options_key",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+    alwayslink = True,
 )
 
 torch_tpu_cc_test(
@@ -124,15 +142,18 @@ torch_tpu_cc_test(
     nopresubmit = nopresubmit,
     tags = [chip],
     deps = [
+        ":kernel_registration",  # buildcleaner: keep
         ":nonzero_indices",
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
         "//csrc/common:compilation_cache",
+        "//csrc/common:compile_options_key",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",
         "//csrc/common:status_test_utils",
+        "//csrc/common:unbounded_dynamic_kernel_registry",
         "//csrc/ops/nonzero",
         "//csrc/pjrt:pjrt_execute",
         "//csrc/pjrt:pjrt_state",

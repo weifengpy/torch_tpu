@@ -17,7 +17,6 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 
-#include <cstdint>
 #include <memory>
 
 #include "absl/status/statusor.h"
@@ -48,10 +47,6 @@ namespace torch_tpu {
 //
 // Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
 // 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
-//
-// Matches the LoadedExecutableBuilder signature, so it can be passed directly
-// to CompilationCache::AddUnboundedDynamicCacheEntry. The kernel's build
-// options and argument layouts are set on top of `compile_options`.
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options);
@@ -60,9 +55,9 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
 // kernel.
 UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata();
 
-// Returns the CompilationCacheKey which uses the ShapelessKey a nonzero graph
+// Returns the ShapelessKey a nonzero graph
 // would be lowered to.
-CompilationCacheKey NonZeroCacheKey();
+ShapelessKey NonZeroCacheKey();
 
 }  // namespace torch_tpu
 
