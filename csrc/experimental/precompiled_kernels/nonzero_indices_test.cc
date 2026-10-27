@@ -42,10 +42,12 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
+#include "csrc/common/compile_options_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/common/unbounded_dynamic_kernel_registry.h"
 #include "csrc/ops/nonzero/nonzero.h"
 #include "csrc/pjrt/pjrt_execute.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -120,6 +122,14 @@ xla::Literal ReferenceIndices(const xla::Literal& input) {
     }
   }
   return result;
+}
+
+// The exact cache key :kernel_registration registers the kernel under. Must
+// match the registration in kernel_registration.cc.
+CompilationCacheKey NonzeroKernelCacheKey() {
+  return CompilationCacheKey(GraphKey(NonZeroCacheKey(), DimensionsKey({})),
+                             CompileOptionsKey({}),
+                             static_cast<int>(NonzeroKernelId::kNonzero2D));
 }
 
 class NonzeroIndicesTest : public testing::Test {
@@ -231,7 +241,7 @@ TEST_F(NonzeroIndicesTest, ReusesExecutableAcrossShapesAndCounts) {
 TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
   CompilationCache& cache = CompilationCache::GetInstance();
   ASSERT_TRUE(cache
-                  .AddUnboundedDynamicCacheEntry(NonZeroCacheKey(),
+                  .AddUnboundedDynamicCacheEntry(NonzeroKernelCacheKey(),
                                                  BuildNonzeroIndicesExecutable,
                                                  MakeNonzeroDynamicMetadata())
                   .ok());
@@ -243,7 +253,7 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
     SCOPED_TRACE(testing::Message() << rows << "x" << cols << " K=" << k);
     const Shape input_shape({rows, cols}, mlir::ElementType::F32);
     const Shape output_shape({k, 2}, mlir::ElementType::I64);
-    const CompilationCacheKey key = NonZeroCacheKey();
+    const CompilationCacheKey key = NonzeroKernelCacheKey();
 
     const int64_t hits_before = cache.GetCacheHits();
     const int64_t misses_before = cache.GetCacheMisses();
@@ -278,6 +288,70 @@ TEST_F(NonzeroIndicesTest, UnboundedDynamicCacheServesKernel) {
   }
 
   cache.EvictAll();
+}
+
+// Logical shapes of a nonzero call, as passed to the compatibility predicate.
+struct NonzeroShapesCase {
+  std::string_view name;
+  std::vector<Shape> inputs;
+  std::vector<Shape> outputs;
+};
+
+// :kernel_registration, linked into this test, registers the kernel under
+// NonzeroKernelCacheKey() during static initialization.
+TEST(NonzeroRegistrationTest, KernelIsRegisteredUnderNonzeroCacheKey) {
+  const UnboundedDynamicKernel* kernel =
+      UnboundedDynamicKernelRegistry::GetInstance().GetUnboundedDynamicKernel(
+          NonzeroKernelCacheKey());
+  ASSERT_NE(kernel, nullptr);
+  EXPECT_EQ(kernel->build, &BuildNonzeroIndicesExecutable);
+}
+
+// The kernel serves any F32[M,N] input with an S64[K,2] output, K > 2.
+TEST(NonzeroRegistrationTest, FindsKernelForCompatibleShapes) {
+  const NonzeroShapesCase cases[] = {
+      {"square",
+       {Shape({4, 4}, mlir::ElementType::F32)},
+       {Shape({5, 2}, mlir::ElementType::I64)}},
+      {"single row",
+       {Shape({1, 16385}, mlir::ElementType::F32)},
+       {Shape({1025, 2}, mlir::ElementType::I64)}},
+      {"single column",
+       {Shape({3, 1}, mlir::ElementType::F32)},
+       {Shape({3, 2}, mlir::ElementType::I64)}},
+  };
+  for (const NonzeroShapesCase& c : cases) {
+    SCOPED_TRACE(c.name);
+    const UnboundedDynamicKernel* kernel =
+        UnboundedDynamicKernelRegistry::GetInstance()
+            .FindUnboundedDynamicKernel(NonZeroCacheKey(), c.inputs, c.outputs);
+    ASSERT_NE(kernel, nullptr);
+    EXPECT_EQ(kernel->key, NonzeroKernelCacheKey());
+    EXPECT_EQ(kernel->build, &BuildNonzeroIndicesExecutable);
+  }
+}
+
+TEST(NonzeroRegistrationTest, RejectsIncompatibleShapes) {
+  const Shape input({4, 4}, mlir::ElementType::F32);
+  const Shape output({5, 2}, mlir::ElementType::I64);
+  const NonzeroShapesCase cases[] = {
+      {"rank-3 input", {Shape({2, 4, 4}, mlir::ElementType::F32)}, {output}},
+      {"rank-1 input", {Shape({16}, mlir::ElementType::F32)}, {output}},
+      {"BF16 input", {Shape({4, 4}, mlir::ElementType::BF16)}, {output}},
+      {"two inputs", {input, input}, {output}},
+      {"no outputs", {input}, {}},
+      {"I32 output", {input}, {Shape({5, 2}, mlir::ElementType::I32)}},
+      {"output not [K,2]", {input}, {Shape({5, 3}, mlir::ElementType::I64)}},
+      // The kernel's output layout requires K > 2.
+      {"K == 2", {input}, {Shape({2, 2}, mlir::ElementType::I64)}},
+  };
+  for (const NonzeroShapesCase& c : cases) {
+    SCOPED_TRACE(c.name);
+    EXPECT_EQ(
+        UnboundedDynamicKernelRegistry::GetInstance()
+            .FindUnboundedDynamicKernel(NonZeroCacheKey(), c.inputs, c.outputs),
+        nullptr);
+  }
 }
 
 // Build the real TorchTPU SHLO lowering for live XLA comparisons.

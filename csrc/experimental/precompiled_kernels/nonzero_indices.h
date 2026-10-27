@@ -17,7 +17,6 @@
 #ifndef TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 #define TORCH_TPU_CSRC_EXPERIMENTAL_PRECOMPILED_KERNELS_NONZERO_INDICES_H_
 
-#include <cstdint>
 #include <memory>
 
 #include "absl/status/statusor.h"
@@ -28,6 +27,16 @@
 #include "xla/pjrt/pjrt_executable.h"
 
 namespace torch_tpu {
+
+// Identifies a precompiled nonzero indices kernel. The value is used as the
+// `id_key` of the kernel's `CompilationCacheKey`, which is persisted in the
+// names of the tier-2 cache entries, so values must be explicit, non-negative,
+// and must never be reused or renumbered. -1 is reserved for keys that don't
+// identify a dynamic kernel.
+enum class NonzeroKernelId : int {
+  // The nonzero indices kernel for F32[M,N] inputs.
+  kNonzero2D = 1,
+};
 
 // Builds and compiles the Mosaic nonzero kernel. Run through `Execute` with the
 // F32[M,N] input and the logical output shape S64[K,2], the executable returns
@@ -48,10 +57,6 @@ namespace torch_tpu {
 //
 // Caller-checked arithmetic bounds: 1 <= M <= INT32_MAX,
 // 1 <= N <= INT32_MAX - 127, and 3 <= K <= min(M*N, INT32_MAX).
-//
-// Matches the LoadedExecutableBuilder signature, so it can be passed directly
-// to CompilationCache::AddUnboundedDynamicCacheEntry. The kernel's build
-// options and argument layouts are set on top of `compile_options`.
 absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>>
 BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
                               UniqueCompileOptions compile_options);
@@ -60,9 +65,9 @@ BuildNonzeroIndicesExecutable(xla::PjRtClient& client,
 // kernel.
 UnboundedDynamicExecutionMetadata MakeNonzeroDynamicMetadata();
 
-// Returns the CompilationCacheKey which uses the ShapelessKey a nonzero graph
+// Returns the ShapelessKey a nonzero graph
 // would be lowered to.
-CompilationCacheKey NonZeroCacheKey();
+ShapelessKey NonZeroCacheKey();
 
 }  // namespace torch_tpu
 
