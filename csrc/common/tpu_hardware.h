@@ -16,9 +16,109 @@
 #ifndef TORCH_TPU_CSRC_COMMON_TPU_HARDWARE_H_
 #define TORCH_TPU_CSRC_COMMON_TPU_HARDWARE_H_
 
+#include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
+
+#include "absl/container/flat_hash_map.h"
 
 namespace torch_tpu {
+
+inline constexpr std::string_view kDefaultPciDevicesDir =
+    "/sys/bus/pci/devices";
+inline constexpr std::string_view kDefaultVfioDir = "/dev/vfio";
+
+using TpuTopology = std::vector<int64_t>;  // INT_VEC_OK
+using TpuTopologyMap = absl::flat_hash_map<int64_t, TpuTopology>;
+
+// SparseCore specs of a TPU generation.
+//
+// SparseCores are TPU processors specialized for sparse operations such as
+// embedding lookups.
+struct SparseCoreSpec {
+  // Number of SparseCores per TPU device. On generations that expose each
+  // TensorCore of a chip as a separate device (e.g. TPU v7), this counts the
+  // SparseCores of one device, not of the chip.
+  int64_t sparse_cores_per_device = 0;
+  // SIMD width (number of vector lanes) of each SparseCore.
+  int64_t simd_width = 0;
+
+  bool operator==(const SparseCoreSpec& other) const = default;
+};
+
+// Specs of a TPU generation that TorchTPU supports.
+//
+// TorchTPU doesn't run on TPU v4 and older generations, so they have no
+// constants on `TpuSpec`.
+struct TpuSpec {
+  // Human-readable name of the generation, as returned by
+  // `torch.tpu.get_device_properties().name`.
+  std::string name;
+  // Number of separately-addressable devices the chip exposes to the runtime,
+  // used as the divisor that turns a per-chip quantity into what one device
+  // sees. This is megacore-aware (not the physical TensorCore count): 1 for
+  // single-core chips (v5e, v6e, v8t) and megacore chips (v5p) that fuse their
+  // two physical cores into one addressable device, and 2 for dual-core chips
+  // without megacore (v7, v8i).
+  int64_t devices_per_chip = 1;
+  // Physical HBM capacity per chip, in bytes.
+  int64_t hbm_bytes_per_chip = 0;
+  // Peak dense bf16 compute per chip, in FLOP/s.
+  int64_t bf16_flops_per_chip = 0;
+  // Topology dimensions of each number of devices that a host can use.
+  TpuTopologyMap topologies;
+  // SparseCore specs of the generation, or std::nullopt if it has no
+  // SparseCores.
+  std::optional<SparseCoreSpec> sparse_core_spec;
+
+  // Physical HBM capacity, in bytes, visible to a single device.
+  [[nodiscard]] int64_t hbm_bytes_per_device() const {
+    return hbm_bytes_per_chip / devices_per_chip;
+  }
+
+  // Peak dense bf16 compute, in FLOP/s, for a single device.
+  [[nodiscard]] int64_t bf16_flops_per_device() const {
+    return bf16_flops_per_chip / devices_per_chip;
+  }
+
+  bool operator==(const TpuSpec& other) const = default;
+
+  static const TpuSpec& V5p();
+  static const TpuSpec& V5e();
+  static const TpuSpec& V6e();
+  static const TpuSpec& V7();
+  static const TpuSpec& V8i();
+  static const TpuSpec& V8t();
+};
+
+// Returns the mapping from PCI device ID (e.g. "0x0076") to the corresponding
+// `TpuSpec`.
+[[nodiscard]] const absl::flat_hash_map<std::string, const TpuSpec*>&
+GetTpuSpecByPciDeviceIdMap();
+
+// Result of scanning PCI devices for VFIO-exposed TPUs.
+struct PciTpuScanResult {
+  int64_t device_count = 0;
+  const TpuSpec* spec = nullptr;
+
+  bool operator==(const PciTpuScanResult& other) const = default;
+};
+
+// Returns the `TpuSpec` of the attached TPU device by scanning PCI devices
+// under `pci_devices_dir` for a Google TPU, or nullptr if no supported TPU is
+// found. Does not require VFIO exposure and does not initialize any TPU
+// runtime.
+[[nodiscard]] const TpuSpec* GetTpuSpec(
+    std::string_view pci_devices_dir = kDefaultPciDevicesDir);
+
+// Scans PCI devices under `pci_devices_dir` for supported Google TPUs whose
+// IOMMU group is exposed under `vfio_dir`. Returns the count of VFIO-exposed
+// TPU devices and the `TpuSpec` of the first one found (or nullptr if none).
+[[nodiscard]] PciTpuScanResult ScanPciTpus(
+    std::string_view pci_devices_dir = kDefaultPciDevicesDir,
+    std::string_view vfio_dir = kDefaultVfioDir);
 
 // Returns whether any device node through which libtpu could reach a TPU
 // exists:
