@@ -616,6 +616,58 @@ class CompileTest(seed_test_utils.RepeatableTest):
     expected = torch.full((2, 3), 4.0, device="cpu")
     utils.assert_close(out.cpu(), expected)
 
+  def test_64bit_pad_subgraph_caches_and_preserves_runtime_shape(self):
+    def fn(x):
+      return x * 2 + 1
+
+    executables = []
+    orig_dc_call = _backend.dynamic_compiler.DynamicCompiler.__call__
+
+    def capture_executable(dc_self, *args, **kwargs):
+      exe = orig_dc_call(dc_self, *args, **kwargs)
+      executables.append(exe)
+      return exe
+
+    ttc = _backend.dynamic_compiler.tpu_torch_compile
+    x3 = torch.arange(12, device=self.device, dtype=torch.int64).reshape(3, 4)
+    x6 = torch.arange(24, device=self.device, dtype=torch.int64).reshape(6, 4)
+    torch._dynamo.mark_dynamic(x3, 0, min=2, max=8)
+    torch._dynamo.mark_dynamic(x6, 0, min=2, max=8)
+
+    with mock.patch.object(
+        _backend.dynamic_compiler.DynamicCompiler,
+        "__call__",
+        autospec=True,
+        side_effect=capture_executable,
+    ):
+      compiled = torch.compile(fn, backend="tpu", fullgraph=True)
+      out3 = compiled(x3)
+      out6 = compiled(x6)
+      utils.assert_close(out3.cpu(), fn(x3.cpu()))
+      utils.assert_close(out6.cpu(), fn(x6.cpu()))
+
+      stats_before = torch.tpu._get_cache_stats()
+      out3_repeat = compiled(x3)
+      stats_after = torch.tpu._get_cache_stats()
+      utils.assert_close(out3_repeat.cpu(), fn(x3.cpu()))
+
+    self.assertLen(executables, 1)
+    self.assertEqual(
+        stats_after.num_compilations - stats_before.num_compilations, 0
+    )
+    self.assertGreaterEqual(
+        stats_after.num_cache_hits - stats_before.num_cache_hits, 1
+    )
+
+    dyn_exec = executables[0]
+    (padded_x3,) = dyn_exec._compile_and_execute_pad_subgraph([x3], 0)
+    self.assertEqual(padded_x3.shape, (3, 4))
+    self.assertTrue(ttc.is_device_shape_dynamic(padded_x3))
+    utils.assert_close(padded_x3.cpu(), x3.cpu())
+
+    (reused_x3,) = dyn_exec._compile_and_execute_pad_subgraph([padded_x3], 0)
+    self.assertIs(reused_x3, padded_x3)
+
 
 class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
 

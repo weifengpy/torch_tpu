@@ -2051,13 +2051,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Dynamic compilation is TPU-only.")
   def test_get_dynamic_pad_module_empty_shapes(self):
-    expected = re.compile(
-        r".*get_dynamic_pad_module\(\): dynamic_pad_module requires at least"
-        r" one shape\..*"
-    )
     with et.assert_raises_message(
         RuntimeError,
-        tpu=expected,
+        tpu="""get_dynamic_pad_module(): dynamic_pad_module requires at least one shape""",
     ):
       tpu_torch_compile.get_dynamic_pad_module([], [])
 

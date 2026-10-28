@@ -1029,8 +1029,8 @@ CompileResult PyGetOrCompilePadModule(
   return result;
 }
 
-// Returns a CompileResult containing the executable and the MLIR
-// module for a pad subgraph.
+// Returns a CompileResult containing the executable and optionally the MLIR
+// module for a dynamic pad subgraph.
 // Args:
 //   tensor_info: A list of pairs, where each pair contains the shape of a
 //     tensor and its scalar type.
@@ -1039,6 +1039,9 @@ CompileResult PyGetOrCompilePadModule(
 //   fast_compile: If true, use the compiler profile optimized for eager
 //         execution; otherwise, use the profile optimized for
 //         torch.compile.
+//   build_mlir_module: If true, populate the module field in the CompileResult
+//     with the MLIR module for the pad subgraph.
+//   is_caching_disabled: If true, do not use the cache.
 // Returns:
 //   A CompileResult containing the executable and optionally the MLIR module
 //   for the pad subgraph.
@@ -1062,7 +1065,8 @@ CompileResult PyGetOrCompilePadModule(
 // }
 CompileResult PyGetDynamicPadModule(
     const std::vector<TensorInfo>& tensor_info,
-    const std::vector<TensorBounds>& bounds_list, const bool fast_compile) {
+    const std::vector<TensorBounds>& bounds_list, const bool fast_compile,
+    const bool build_mlir_module, const bool is_caching_disabled) {
   std::vector<Shape> dynamic_shapes =
       MakePadDynamicShapes(tensor_info, bounds_list);
 
@@ -1076,19 +1080,20 @@ CompileResult PyGetDynamicPadModule(
                                              : CompilationMode::kFastRuntime;
   CompilationSpec compilation_spec = GetCompilationSpec(compilation_mode);
 
-  std::optional<ContextedModule> contexted_module;
+  const CompilationCacheKey cache_key(
+      /*graph_key=*/DynamicPadModuleCacheKey(dynamic_shapes),
+      /*compile_options_key=*/compilation_spec.compile_options_key);
 
-  TT_ASSIGN_OR_THROW(contexted_module, ContextedModule::Make(pad_builder),
-                     _ << "failed to build MLIR module");
+  std::vector<Shape> runtime_input_shapes = ToStaticShapes(dynamic_shapes);
+  std::vector<Shape> padded_output_shapes = ToPaddedShapes(dynamic_shapes);
 
   TT_ASSIGN_OR_THROW(
-      SharedLoadedExecutableWithMetadata executable,
-      CompileMlirExecutable(xla::MaybeOwningMlirModule(contexted_module->get()),
-                            std::move(compilation_spec.xla_compile_options)));
-
-  return CompileResult{
-      .module = std::make_shared<ContextedModule>(std::move(*contexted_module)),
-      .executable = std::move(executable)};
+      CompileResult result,
+      CompileModuleWithCache(std::move(pad_builder), cache_key,
+                             runtime_input_shapes, padded_output_shapes,
+                             std::move(compilation_spec.xla_compile_options),
+                             build_mlir_module, is_caching_disabled));
+  return result;
 }
 
 // Precompiles the slice subgraph for the given shapes. Doesn't wait for the
@@ -2319,11 +2324,15 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
 
   m.def("get_dynamic_pad_module", PyGetDynamicPadModule, py::arg("tensor_info"),
         py::arg("bounds_list"), py::arg("fast_compile") = false,
+        py::arg("build_mlir_module") = false,
+        py::arg("is_caching_disabled") = false,
         "Returns the compiled PJRT executable for a dynamic pad subgraph.\n\n"
         "Args:\n"
         "  tensor_info: A list of (shape, dtype) pairs for each tensor.\n"
         "  bounds_list: A list of (dynamic_dimensions, upper_bounds) pairs.\n"
-        "  fast_compile: Whether to use the fast compile mode.");
+        "  fast_compile: Whether to use the fast compile mode.\n"
+        "  build_mlir_module: Whether to build the MLIR module.\n"
+        "  is_caching_disabled: Whether to use the cache.");
 
   m.def("precompile_pad_module", PyPrecompilePadModule, py::arg("tensor_info"),
         py::arg("bounds_list"), py::arg("fast_compile") = false,

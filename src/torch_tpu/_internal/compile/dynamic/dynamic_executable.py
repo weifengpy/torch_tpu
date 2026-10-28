@@ -189,6 +189,7 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       compile_result = tpu_torch_compile.get_dynamic_pad_module(
           pad_module_info,
           pad_module_bounds,
+          build_mlir_module=logging.level_debug(),
       )
 
       if compile_result.module is not None:
@@ -201,8 +202,12 @@ class DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
             ),
         )
 
+      output_shapes = [
+          tpu_torch_compile.OutputShape(list(tensor.shape), is_dynamic=True)
+          for tensor in pad_module_args
+      ]
       pad_outputs = tpu_torch_compile.execute(
-          compile_result.executable, pad_module_args
+          compile_result.executable, pad_module_args, output_shapes
       )
 
       for idx, output in zip(pad_module_indices, pad_outputs):

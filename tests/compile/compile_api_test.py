@@ -1633,24 +1633,53 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
         tensor_info, bounds_list
     )
     self.assertIsNotNone(compile_result.executable)
-    self.assertIsNotNone(compile_result.module)
+    self.assertIsNone(compile_result.module)
 
-    mlir_text = tpu_torch_compile.serialize_mlir_text(compile_result.module)
+    stats_before_hit = torch.tpu._get_cache_stats()
+    cached_result = tpu_torch_compile.get_dynamic_pad_module(
+        tensor_info, bounds_list, build_mlir_module=True
+    )
+    stats_after_hit = torch.tpu._get_cache_stats()
+    self.assertIs(cached_result.executable, compile_result.executable)
+    self.assertIsNotNone(cached_result.module)
+    self.assertEqual(
+        stats_after_hit.num_cache_hits - stats_before_hit.num_cache_hits, 1
+    )
+    self.assertEqual(
+        stats_after_hit.num_compilations - stats_before_hit.num_compilations, 0
+    )
+
+    mlir_text = tpu_torch_compile.serialize_mlir_text(cached_result.module)
     self.assertIn('stablehlo.set_dimension_size', mlir_text)
+
+    uncached_result = tpu_torch_compile.get_dynamic_pad_module(
+        tensor_info, bounds_list, is_caching_disabled=True
+    )
+    stats_after_uncached = torch.tpu._get_cache_stats()
+    self.assertIsNot(uncached_result.executable, compile_result.executable)
+    self.assertIsNone(uncached_result.module)
+    self.assertEqual(
+        stats_after_uncached.num_cache_reqs - stats_after_hit.num_cache_reqs, 0
+    )
+
+    wider_bounds_result = tpu_torch_compile.get_dynamic_pad_module(
+        tensor_info, [([1], [16])]
+    )
+    self.assertIsNot(wider_bounds_result.executable, compile_result.executable)
 
     input_tensor = torch.ones(1, 4, dtype=torch.int32, device='tpu')
     result = tpu_torch_compile.execute(
         compile_result.executable,
         [input_tensor],
-        output_shapes=[tpu_torch_compile.OutputShape(is_dynamic=True)],
+        output_shapes=[tpu_torch_compile.OutputShape([1, 4], is_dynamic=True)],
     )
     self.assertLen(result, 1)
     padded_tensor = result[0]
-    self.assertEqual(padded_tensor.shape, (1, 8))
+    self.assertEqual(padded_tensor.shape, (1, 4))
     self.assertTrue(tpu_torch_compile.is_device_shape_dynamic(padded_tensor))
 
     expected = torch.tensor([[1, 1, 1, 1]], dtype=torch.int32)
-    utils.assert_close(padded_tensor.cpu()[:, :4], expected)
+    utils.assert_close(padded_tensor.cpu(), expected)
 
     # Also test when runtime dimension size equals upper bound ([1, 8] <= [1, 8]).
     at_bound_info = [([1, 8], torch.int32)]

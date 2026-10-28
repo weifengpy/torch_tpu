@@ -33,6 +33,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fingerprint_utils.h"
+#include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
@@ -482,6 +483,47 @@ TEST(OpParamCacheKeys, SetParamScatterOptions) {
   TT_ASSERT_OK_AND_ASSIGN(auto params,
                           *OpParamCacheKeysBuilder().SetParam("foo", options));
   EXPECT_THAT(params, ElementsAre(Pair("foo", 2)));
+}
+
+TEST(DynamicPadModuleCacheKey, DistinguishesShapesBoundsDtypesAndPadModule) {
+  Shape base({4, 16}, mlir::ElementType::I64);
+  base.dynamic_dimensions().push_back(BoundedDynamicDimension{
+      .dimension = 1, .lower_bound = 2, .upper_bound = 64});
+
+  Shape same = base;
+  EXPECT_EQ(DynamicPadModuleCacheKey({base}), DynamicPadModuleCacheKey({same}));
+  EXPECT_NE(DynamicPadModuleCacheKey({base}),
+            PadModuleCacheKey({base}, /*pad_only_module=*/true));
+  EXPECT_NE(DynamicPadModuleCacheKey({base}),
+            PadModuleCacheKey({base}, /*pad_only_module=*/false));
+
+  Shape wider_bound({4, 16}, mlir::ElementType::I64);
+  wider_bound.dynamic_dimensions().push_back(BoundedDynamicDimension{
+      .dimension = 1, .lower_bound = 2, .upper_bound = 128});
+  EXPECT_NE(DynamicPadModuleCacheKey({base}),
+            DynamicPadModuleCacheKey({wider_bound}));
+
+  Shape diff_input_size({4, 32}, mlir::ElementType::I64);
+  diff_input_size.dynamic_dimensions().push_back(BoundedDynamicDimension{
+      .dimension = 1, .lower_bound = 2, .upper_bound = 64});
+  EXPECT_NE(DynamicPadModuleCacheKey({base}),
+            DynamicPadModuleCacheKey({diff_input_size}));
+
+  Shape diff_dtype({4, 16}, mlir::ElementType::I32);
+  diff_dtype.dynamic_dimensions().push_back(BoundedDynamicDimension{
+      .dimension = 1, .lower_bound = 2, .upper_bound = 64});
+  EXPECT_NE(DynamicPadModuleCacheKey({base}),
+            DynamicPadModuleCacheKey({diff_dtype}));
+
+  // Same static and padded dimensions ({4, 64}), different dynamic axis.
+  Shape at_bound_dim1({4, 64}, mlir::ElementType::I64);
+  at_bound_dim1.dynamic_dimensions().push_back(BoundedDynamicDimension{
+      .dimension = 1, .lower_bound = 2, .upper_bound = 64});
+  Shape at_bound_dim0({4, 64}, mlir::ElementType::I64);
+  at_bound_dim0.dynamic_dimensions().push_back(BoundedDynamicDimension{
+      .dimension = 0, .lower_bound = 2, .upper_bound = 4});
+  EXPECT_NE(DynamicPadModuleCacheKey({at_bound_dim1}),
+            DynamicPadModuleCacheKey({at_bound_dim0}));
 }
 
 }  // namespace
